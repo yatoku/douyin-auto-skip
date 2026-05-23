@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>抖音自动跳过</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="title">抖音自动跳过</h1>
+      <span class="version">v1.1</span>
+    </header>
+
+    <div class="toggle-group">
+      <div class="toggle-item">
+        <div class="toggle-info">
+          <span class="toggle-label">跳过广告</span>
+          <span class="toggle-desc">自动跳过广告视频</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="blockAd" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-item">
+        <div class="toggle-info">
+          <span class="toggle-label">跳过购物</span>
+          <span class="toggle-desc">自动跳过商品橱窗和购物链接</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="blockShopping" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-item">
+        <div class="toggle-info">
+          <span class="toggle-label">跳过直播</span>
+          <span class="toggle-desc">自动跳过直播带货视频</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="blockLive" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="stats">
+      <span id="statsText">已启动，正在守护您的浏览体验</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
