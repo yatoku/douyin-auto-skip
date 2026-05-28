@@ -20,9 +20,13 @@
     showNotification: true,
     notifDuration: 500,
     busyMs: 1500,
-    detectDelay: 500, // 视频跳变后等 DOM 渲染
-    jumpThreshold: 3, // currentTime 从 >3 跳到 <0.5 视为切换
-    rafInterval: 200, // RAF 检查间隔 ms
+    detectDelay: 500,
+    jumpThreshold: 3,
+    rafInterval: 200,
+    arrowDelay: 80,
+    clickDelay: 160,
+    qualityDelay: 200,
+    initDelay: 1200,
   };
 
   let busy = false;
@@ -37,7 +41,10 @@
     C.debug && console.log("[抖音跳过]", ...a);
   }
 
-  // ========== 通知 ==========
+  // ========== 通知（DOM 复用，避免反复创建/销毁） ==========
+  let notifEl = null;
+  let notifTimer1 = 0;
+  let notifTimer2 = 0;
   function notify(type, text) {
     if (!C.showNotification) return;
     const colors = {
@@ -54,33 +61,39 @@
       info: "\u2713",
       settings: "\u2699\uFE0F",
     };
-    const old = document.getElementById("dy-n");
-    old && old.remove();
-    const el = document.createElement("div");
-    el.id = "dy-n";
-    el.textContent = `${icons[type]} ${text}`;
-    Object.assign(el.style, {
-      position: "fixed",
-      top: "16px",
-      left: "50%",
-      transform: "translateX(-50%)",
-      zIndex: "2147483647",
-      padding: "10px 24px",
-      borderRadius: "24px",
-      color: "#fff",
-      fontSize: "14px",
-      fontWeight: "600",
-      fontFamily: "-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif",
-      background: colors[type],
-      boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
-      pointerEvents: "none",
-    });
-    document.body.appendChild(el);
-    setTimeout(() => {
-      el.style.transition = "opacity .5s";
-      el.style.opacity = "0";
+    if (!notifEl) {
+      notifEl = document.createElement("div");
+      notifEl.id = "dy-n";
+      Object.assign(notifEl.style, {
+        position: "fixed",
+        top: "16px",
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: "2147483647",
+        padding: "10px 24px",
+        borderRadius: "24px",
+        color: "#fff",
+        fontSize: "14px",
+        fontWeight: "600",
+        fontFamily: "-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif",
+        boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+        pointerEvents: "none",
+      });
+      document.body.appendChild(notifEl);
+    }
+    clearTimeout(notifTimer1);
+    clearTimeout(notifTimer2);
+    notifEl.textContent = `${icons[type]} ${text}`;
+    notifEl.style.background = colors[type];
+    notifEl.style.opacity = "1";
+    notifEl.style.transition = "none";
+    notifTimer1 = setTimeout(() => {
+      notifEl.style.transition = "opacity .5s";
+      notifEl.style.opacity = "0";
     }, C.notifDuration);
-    setTimeout(() => el.remove(), C.notifDuration * 2);
+    notifTimer2 = setTimeout(() => {
+      notifEl.style.opacity = "0";
+    }, C.notifDuration * 2);
   }
 
   // ========== 辅助 ==========
@@ -96,29 +109,15 @@
     );
   }
   function anyVis(sel) {
-    try {
-      return [...document.querySelectorAll(sel)].some(vis);
-    } catch (_) {
-      return false;
-    }
+    return [...document.querySelectorAll(sel)].some(vis);
   }
 
   // ========== 容器获取 ==========
-  // 普通视频容器（广告/购物检测使用）
   function getActiveFeed() {
     return document.querySelector('[data-e2e="feed-active-video"]');
   }
 
-  // 虚拟列表中当前活跃的 feed-item（使用有子元素的第二个元素作为当前显示的 Dom）
-  function getActiveLiveItem() {
-    const feed = document.querySelector(
-      '[data-e2e="feed-live"]:has(video[autoplay=""])',
-    );
-    return feed;
-  }
-
-  function getKey() {
-    const feed = getActiveFeed();
+  function getKey(feed) {
     if (feed) {
       const v = feed.querySelector("video");
       if (v) return v.getAttribute("poster") || v.src || "";
@@ -128,47 +127,44 @@
         ""
       );
     }
-    // log("没有找到视频容器，使用时间戳作为 key", Date.now().toString());
-    return Date.now().toString(); // 没有视频时使用时间戳，确保每次都检测
+    return Date.now().toString();
   }
 
-  // ========== 广告检测 ==========
-  function isAd() {
-    const feed = getActiveFeed();
+  // ========== 广告检测（单次 :has() 替代遍历 + 子查询） ==========
+  function isAd(feed) {
     if (!feed) return false;
-    const accountEls = feed.querySelectorAll('[class*="account"]');
-    for (const el of accountEls) {
-      if (el.querySelectorAll("svg[viewBox='0 0 30 16']").length > 0) {
-        // log("广告: 检测到'广告'标签");
-        return true;
-      }
+    if (
+      feed.querySelector('[class*="account"]:has(svg[viewBox="0 0 30 16"])')
+    ) {
+      log("广告: 检测到'广告'标签");
+      return true;
     }
     return false;
   }
 
   // ========== 购物检测 ==========
-  function isShopping() {
-    const feed = getActiveFeed();
+  function isShopping(feed) {
     if (!feed) return false;
     if (
       anyVis(
         ".xgplayer-shop-anchor,[class*='shop-anchor'],[class*='shopAnchor'],[class*='shop-bar']",
       )
     ) {
-      // log("购物: 购物锚点");
+      log("购物: 购物锚点");
       return true;
     }
-    const shopLinks = feed.querySelectorAll("a");
-    for (const a of shopLinks) {
-      const href = (a.getAttribute("href") || "").toLowerCase();
-      if (
-        (href.includes("haohuo") || href.includes("jinritemai")) &&
-        vis(a) &&
-        a.getBoundingClientRect().left < innerWidth * 0.66
-      ) {
-        // log("购物: 购物链接");
-        return true;
-      }
+    if (
+      [...feed.querySelectorAll("a")].some((a) => {
+        const href = (a.getAttribute("href") || "").toLowerCase();
+        return (
+          (href.includes("haohuo") || href.includes("jinritemai")) &&
+          vis(a) &&
+          a.getBoundingClientRect().left < innerWidth * 0.66
+        );
+      })
+    ) {
+      log("购物: 购物链接");
+      return true;
     }
     const sideBar = document.querySelector("#videoSideBar");
     if (sideBar && vis(sideBar)) {
@@ -177,11 +173,11 @@
           "[class*='good'],[class*='product'],[class*='shop'],[class*='cart'],[class*='buy']",
         )
       ) {
-        // log("购物: 侧边栏商品");
+        log("购物: 侧边栏商品");
         return true;
       }
       if (/商品|橱窗|购物车|小黄车/.test(sideBar.textContent.slice(0, 200))) {
-        // log("购物: 侧边栏文字");
+        log("购物: 侧边栏文字");
         return true;
       }
     }
@@ -190,7 +186,7 @@
         "[class*='shopping-card'],[class*='product-card'],[class*='goods-card']",
       )
     ) {
-      // log("购物: 商品卡片");
+      log("购物: 商品卡片");
       return true;
     }
     return false;
@@ -198,18 +194,13 @@
 
   // ========== 直播检测 ==========
   function isLive() {
-    const feedItem = getActiveLiveItem();
-    // log("直播检测: feedItem:",  !!feedItem);
-    return !!feedItem;
-    // if (!feedItem) return false;
-
-    // // 5. 全页面兜底
-    // if (feedItem.querySelector('[data-e2e="feed-live"]')) {
-    log("直播: feed-live");
-    //   return true;
-    // }
-
-    // return false;
+    if (
+      document.querySelector('[data-e2e="feed-live"]:has(video[autoplay=""])')
+    ) {
+      log("直播: feed-live 中有 autoplay 视频");
+      return true;
+    }
+    return false;
   }
 
   // ========== 跳过操作 ==========
@@ -237,42 +228,41 @@
             clientY: innerHeight / 2,
           }),
         ),
-      80,
+      C.arrowDelay,
     );
     setTimeout(() => {
-      const btns = document.querySelectorAll(
-        '[class*="next-video"],[class*="arrow-down"],[class*="switch-next"],[data-e2e*="next"],[data-e2e*="arrow-down"]',
-      );
-      for (const b of btns) {
-        if (vis(b)) {
-          b.click();
-          break;
-        }
-      }
-    }, 160);
+      const btn = [
+        ...document.querySelectorAll(
+          '[class*="next-video"],[class*="arrow-down"],[class*="switch-next"],[data-e2e*="next"],[data-e2e*="arrow-down"]',
+        ),
+      ].find(vis);
+      btn && btn.click();
+    }, C.clickDelay);
   }
 
   // ========== 核心检测 ==========
   function detect() {
     if (busy) return;
-    const key = getKey();
-    // log("检测视频，key:", key, "lastKey:", lastKey  );
+    const feed = getActiveFeed();
+    const key = getKey(feed);
     if (!key || key === lastKey) return;
     lastKey = key;
 
     let type = "";
-    if (C.skipAds && isAd()) type = "ad";
-    else if (C.skipShopping && isShopping()) type = "shopping";
+    if (C.skipAds && isAd(feed)) type = "ad";
+    else if (C.skipShopping && isShopping(feed)) type = "shopping";
     else if (C.skipLive && isLive()) type = "live";
 
     if (!type) return;
     busy = true;
     const names = { ad: "广告视频", shopping: "购物视频", live: "直播带货" };
-    // log(`跳过: ${names[type]}`);
+    log(`跳过: ${names[type]}`);
     notify(type, `已跳过 ${names[type]}`);
     doSkip();
     setTimeout(() => {
       busy = false;
+      lastKey = "";
+      detect();
     }, C.busyMs);
   }
 
@@ -281,7 +271,7 @@
     detectTimer = setTimeout(detect, C.detectDelay);
   }
 
-  // ========== RAF 监控 video.currentTime 跳变 ==========
+  // ========== RAF 监控 ==========
   function rafLoop() {
     rafId = requestAnimationFrame(rafLoop);
     const now = performance.now();
@@ -289,13 +279,9 @@
     lastRafCheck = now;
     if (busy) return;
 
-    const videos = document.querySelectorAll("video");
-    let activeV = null;
-    for (const v of videos) {
-      if (!vis(v) || v.paused || v.readyState < 2) continue;
-      activeV = v;
-      break;
-    }
+    const activeV = [...document.querySelectorAll("video")].find(
+      (v) => vis(v) && !v.paused && v.readyState >= 2,
+    );
     if (!activeV) {
       lastCt = 0;
       lastVideoSrc = "";
@@ -308,39 +294,18 @@
     const ctJumped = lastCt > C.jumpThreshold && ct < 0.5;
 
     if (srcChanged || ctJumped) {
-      // log(
-      //   `视频切换 (srcChanged=${srcChanged}, ctJumped=${ctJumped}, ct: ${lastCt.toFixed(1)}→${ct.toFixed(1)})`,
-      // );
+      log(
+        `视频切换 (srcChanged=${srcChanged}, ctJumped=${ctJumped}, ct: ${lastCt.toFixed(1)}→${ct.toFixed(1)})`,
+      );
       scheduleDetect();
     }
     lastCt = ct;
     lastVideoSrc = src;
   }
 
-  // ========== 清晰度 ==========
-  function setHighestQuality() {
-    const btn = document.querySelector(
-      '[class*="quality"],[class*="definition"],[data-e2e*="quality"]',
-    );
-    if (!btn) return;
-    btn.click();
-    setTimeout(() => {
-      for (const q of C.qualityPriority) {
-        const opt = [...document.querySelectorAll("li,div,span,button")].find(
-          (el) => el.textContent.trim() === q && vis(el),
-        );
-        if (opt) {
-          opt.click();
-          // log("清晰度:", q);
-          notify("settings", `已设置 ${q}`);
-          return;
-        }
-      }
-      btn.click();
-    }, 200);
-  }
-
   // ========== 存储 ==========
+  const STORAGE_KEYS = ["blockAd", "blockShopping", "blockLive"];
+  const STORAGE_PROPS = ["skipAds", "skipShopping", "skipLive"];
   chrome.storage.local.get(
     { blockAd: true, blockShopping: true, blockLive: true },
     (d) => {
@@ -350,9 +315,9 @@
     },
   );
   chrome.storage.onChanged.addListener((ch) => {
-    if (ch.blockAd) C.skipAds = ch.blockAd.newValue;
-    if (ch.blockShopping) C.skipShopping = ch.blockShopping.newValue;
-    if (ch.blockLive) C.skipLive = ch.blockLive.newValue;
+    STORAGE_KEYS.forEach((k, i) => {
+      if (ch[k]) C[STORAGE_PROPS[i]] = ch[k].newValue;
+    });
   });
 
   // ========== API ==========
@@ -377,16 +342,14 @@
       busy = false;
       detect();
     },
-    setHighestQuality,
   };
 
   // ========== 启动 ==========
   rafId = requestAnimationFrame(rafLoop);
   const start = () => {
     setTimeout(() => {
-      if (C.autoHighQuality) setHighestQuality();
-      notify("info", "抖音自动跳过已启动");
-    }, 1200);
+      if (C.autoHighQuality) notify("info", "抖音自动跳过已启动");
+    }, C.initDelay);
   };
   if (document.readyState !== "loading") start();
   else document.addEventListener("DOMContentLoaded", start);

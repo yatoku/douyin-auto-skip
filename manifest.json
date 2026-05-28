@@ -1,5 +1,5 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 3,
   "name": "抖音自动跳过",
   "version": "1.0.0",
   "description": "自动跳过抖音PC网页版的广告、购物和直播视频，刷到下一个",
