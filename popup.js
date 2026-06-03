@@ -15,15 +15,28 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const key of keys) {
     const checkbox = document.getElementById(key);
     if (!checkbox) continue;
+
+    // 点击整行 toggle-item 也能切换
+    const item = checkbox.closest(".toggle-item");
+    if (item) {
+      item.addEventListener("click", (e) => {
+        if (e.target === checkbox || e.target.closest(".switch")) return;
+        checkbox.checked = !checkbox.checked;
+        checkbox.dispatchEvent(new Event("change"));
+      });
+    }
+
     checkbox.addEventListener("change", () => {
       const update = {};
       update[key] = checkbox.checked;
-      chrome.storage.local.set(update, () => {
-        chrome.storage.local.get(
-          { blockAd: true, blockShopping: true, blockLive: true },
-          updateStats
-        );
-      });
+      chrome.storage.local.set(update);
+      // 直接更新状态文字，无需再次 get
+      const config = {};
+      for (const k of keys) {
+        const el = document.getElementById(k);
+        config[k] = el ? el.checked : true;
+      }
+      updateStats(config);
     });
   }
 
