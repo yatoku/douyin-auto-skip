@@ -15,14 +15,21 @@
     arrowDelay: 80,
     clickDelay: 160,
     initDelay: 1200,
+    maxConsecutiveSkips: 5,
+    skipCooldownMs: 10000,
+    observerThrottleMs: 300,
   };
 
   let busy = false;
   let lastKey = "";
-  let lastVideoSrc = "";
+  let lastVideoKey = "";
   let lastCt = 0;
   let lastRafCheck = 0;
   let pageVisible = !document.hidden;
+  let consecutiveSkips = 0;
+  let cooldownActive = false;
+  let lastUrl = location.href;
+  let observerThrottleTimer = 0;
 
   // ========== 定时器统一管理 ==========
   let rafId = 0;
@@ -54,14 +61,21 @@
     clearTimer(skipClickTimer);
     clearTimer(busyTimer);
     clearTimer(initTimer);
+    clearTimer(observerThrottleTimer);
     detectTimer = notifTimer1 = notifTimer2 = 0;
     skipWheelTimer = skipClickTimer = busyTimer = 0;
     initTimer = 0;
+    observerThrottleTimer = 0;
+    // 移除路由监听
+    window.removeEventListener("popstate", checkUrlChange);
+    window.removeEventListener("hashchange", checkUrlChange);
     // 断开 MutationObserver
     if (feedObserver) feedObserver.disconnect();
     // 重置状态
     busy = false;
     lastKey = "";
+    consecutiveSkips = 0;
+    cooldownActive = false;
     log("已销毁所有定时器和监听");
   }
 
@@ -154,7 +168,7 @@
         ""
       );
     }
-    return Date.now().toString();
+    return "";
   }
 
   // ========== 广告检测 ==========
@@ -286,10 +300,33 @@
     else if (C.skipShopping && isShopping(feed)) type = "shopping";
     else if (C.skipLive && isLive(feed)) type = "live";
 
-    if (!type) return;
+    if (!type) {
+      consecutiveSkips = 0;
+      return;
+    }
+
+    consecutiveSkips++;
+    if (consecutiveSkips > C.maxConsecutiveSkips) {
+      log(`连续跳过 ${consecutiveSkips} 次，进入冷却期`);
+      notify("info", `连续跳过过多，暂停 ${C.skipCooldownMs / 1000} 秒`);
+      cooldownActive = true;
+      busy = true;
+      clearTimer(busyTimer);
+      busyTimer = setTimeout(() => {
+        busyTimer = 0;
+        busy = false;
+        cooldownActive = false;
+        consecutiveSkips = 0;
+        lastKey = "";
+        log("冷却期结束，恢复检测");
+        detect();
+      }, C.skipCooldownMs);
+      return;
+    }
+
     busy = true;
     const names = { ad: "广告视频", shopping: "购物视频", live: "直播带货" };
-    log(`跳过: ${names[type]}`);
+    log(`跳过: ${names[type]} (连续第${consecutiveSkips}次)`);
     notify(type, `已跳过 ${names[type]}`);
     doSkip();
 
@@ -330,24 +367,30 @@
     );
     if (!activeV) {
       lastCt = 0;
-      lastVideoSrc = "";
+      lastVideoKey = "";
       rafId = requestAnimationFrame(rafLoop);
       return;
     }
 
     const ct = activeV.currentTime;
-    const src = activeV.src || activeV.getAttribute("poster") || "";
-    const srcChanged = src && src !== lastVideoSrc;
+    // Fix 2: 用更稳定的标识替代 video.src（poster > 父容器 data 属性 > src 去参数）
+    const feed = getActiveFeed();
+    const vKey =
+      (feed && feed.getAttribute("data-video-id")) ||
+      (feed && feed.getAttribute("data-aweme-id")) ||
+      activeV.getAttribute("poster") ||
+      (activeV.src ? activeV.src.split("?")[0] : "");
+    const videoChanged = vKey && vKey !== lastVideoKey;
     const ctJumped = lastCt > C.jumpThreshold && ct < 0.5;
 
-    if (srcChanged || ctJumped) {
+    if (videoChanged || ctJumped) {
       log(
-        `视频切换 (srcChanged=${srcChanged}, ctJumped=${ctJumped}, ct: ${lastCt.toFixed(1)}→${ct.toFixed(1)})`,
+        `视频切换 (videoChanged=${videoChanged}, ctJumped=${ctJumped}, ct: ${lastCt.toFixed(1)}→${ct.toFixed(1)})`,
       );
       scheduleDetect();
     }
     lastCt = ct;
-    lastVideoSrc = src;
+    lastVideoKey = vKey;
     rafId = requestAnimationFrame(rafLoop);
   }
 
@@ -399,9 +442,45 @@
     forceCheck() {
       lastKey = "";
       busy = false;
+      consecutiveSkips = 0;
+      cooldownActive = false;
       detect();
     },
     destroy: destroyAll,
+  };
+
+  // ========== SPA 路由变化检测（Fix 4） ==========
+  function resetAllState() {
+    lastKey = "";
+    lastVideoKey = "";
+    lastCt = 0;
+    consecutiveSkips = 0;
+    cooldownActive = false;
+    busy = false;
+    clearTimer(busyTimer);
+    busyTimer = 0;
+    log("路由变化，已重置所有状态");
+    scheduleDetect();
+  }
+
+  function checkUrlChange() {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      resetAllState();
+    }
+  }
+  window.addEventListener("popstate", checkUrlChange);
+  window.addEventListener("hashchange", checkUrlChange);
+  // SPA 还可能通过 pushState/replaceState 跳转，劫持它们
+  const _pushState = history.pushState;
+  const _replaceState = history.replaceState;
+  history.pushState = function (...args) {
+    _pushState.apply(this, args);
+    checkUrlChange();
+  };
+  history.replaceState = function (...args) {
+    _replaceState.apply(this, args);
+    checkUrlChange();
   };
 
   // ========== 页面可见性监控：隐藏时停止 rAF，可见时重启 ==========
@@ -409,13 +488,12 @@
     pageVisible = !document.hidden;
     if (pageVisible) {
       lastKey = "";
-      lastVideoSrc = "";
+      lastVideoKey = "";
       lastCt = 0;
       startRaf();
       scheduleDetect();
     } else {
       stopRaf();
-      // 页面隐藏时清除进行中的跳过定时器
       clearTimer(skipWheelTimer);
       clearTimer(skipClickTimer);
       skipWheelTimer = skipClickTimer = 0;
@@ -423,9 +501,12 @@
   }
   document.addEventListener("visibilitychange", onVisibilityChange);
 
-  // ========== MutationObserver：监听 DOM 变化辅助检测视频切换 ==========
+  // ========== MutationObserver（Fix 1：节流 + 快速过滤无关变更） ==========
   const feedObserver = new MutationObserver((mutations) => {
     if (busy || !pageVisible) return;
+    // 节流：短时间内多次触发只执行一次
+    if (observerThrottleTimer) return;
+    let relevant = false;
     for (const m of mutations) {
       if (m.type === "childList" && m.addedNodes.length > 0) {
         for (const node of m.addedNodes) {
@@ -433,16 +514,22 @@
             node.matches?.('[data-e2e="feed-active-video"]') ||
             node.querySelector?.('[data-e2e="feed-active-video"]')
           )) {
-            scheduleDetect();
-            return;
+            relevant = true;
+            break;
           }
         }
+        if (relevant) break;
       }
       if (m.type === "attributes" && m.attributeName === "data-e2e") {
-        scheduleDetect();
-        return;
+        relevant = true;
+        break;
       }
     }
+    if (!relevant) return;
+    observerThrottleTimer = setTimeout(() => {
+      observerThrottleTimer = 0;
+    }, C.observerThrottleMs);
+    scheduleDetect();
   });
 
   // ========== 页面卸载清理 ==========
